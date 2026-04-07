@@ -8,13 +8,5 @@ wheels/
 
 # Virtual environments
 .venv
-
-# Temp folders
-temp/
-uploads/
-processed/
-
-*.pdf
-
-
-*.db
+venv/
+.env
