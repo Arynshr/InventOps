@@ -3,7 +3,6 @@ import json
 import numpy as np
 from pathlib import Path
 
-
 class DemandGenerator:
     """
     Generates stochastic daily demand per SKU.
