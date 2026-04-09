@@ -5,8 +5,8 @@ from groq import Groq
 from InventOps.models import Observation, Action
 
 
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile")
-GROQ_FAST_MODEL = "llama-3.1-8b-instant"   # for high-volume episode runs
+GROQ_MODEL      = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile")
+GROQ_FAST_MODEL = "llama-3.1-8b-instant"
 
 
 class GroqAgent:
@@ -91,6 +91,9 @@ Respond with a JSON object for ONE action:
     def _parse_action(raw: str) -> Action:
         try:
             data = json.loads(raw)
-            return Action(**data)
+            # Strip keys not in Action to avoid Pydantic validation errors
+            allowed = {"action_type", "sku_id", "quantity", "source_warehouse", "target_warehouse"}
+            filtered = {k: v for k, v in data.items() if k in allowed}
+            return Action(**filtered)
         except Exception:
             return Action(action_type="hold")
