@@ -1,14 +1,85 @@
-# Python-generated files
+# ------------------------------
+# Python bytecode / cache
+# ------------------------------
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
+
+# ------------------------------
+# Build / packaging
+# ------------------------------
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
 
+# ------------------------------
 # Virtual environments
-.venv
+# ------------------------------
+.venv/
 venv/
+env/
+ENV/
+
+# ------------------------------
+# Environment variables / secrets
+# ------------------------------
 .env
 .env.*
 *.env
+
+# ------------------------------
+# Testing / coverage
+# ------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ------------------------------
+# Type checking / linting
+# ------------------------------
+.mypy_cache/
+.dmypy.json
+.ruff_cache/
+.pyre/
+
+# ------------------------------
+# Jupyter / notebooks
+# ------------------------------
+.ipynb_checkpoints/
+
+# ------------------------------
+# Logs / runtime artifacts
+# ------------------------------
+*.log
+*.out
+*.err
+
+# ------------------------------
+# OS / editor junk
+# ------------------------------
+.vscode/
+.idea/
+
+# ------------------------------
+# Docker
+# ------------------------------
+docker-compose.override.yml
+
+# ------------------------------
+# UV / packaging tools
+# ------------------------------
+.uv/
+.python-version
+
+# ------------------------------
+# Temporary files
+# ------------------------------
+*.tmp
+*.swp
+*~
