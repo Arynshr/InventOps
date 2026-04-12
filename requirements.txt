@@ -39,7 +39,6 @@ huggingface-hub==1.10.1
 idna==3.11
 importlib-metadata==8.7.1
 iniconfig==2.3.0
--e file:///home/aryanshr/projects/InventOps
 jaraco-classes==3.4.0
 jaraco-context==6.1.2
 jaraco-functools==4.4.0
