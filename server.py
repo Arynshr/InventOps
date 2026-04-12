@@ -1,42 +1,147 @@
 """
-server.py — HTTP ping server for OpenEnv validator.
-Port 7860 — required for HuggingFace Spaces Docker SDK.
+server.py — FastAPI OpenEnv-compliant HTTP server for InventOps.
+
+Exposes the required OpenEnv endpoints:
+    POST /reset   → {"observation": {...}, "done": false}
+    POST /step    → {"observation": {...}, "reward": float, "done": bool}
+    GET  /state   → {"day": int, "done": bool, ...}
+    GET  /health  → {"status": "ok"}
+    GET  /schema  → {"observation": {...}, "action": {...}}
+
+Run with:
+    uvicorn server:app --host 0.0.0.0 --port 7860
 """
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import json
+from __future__ import annotations
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import Any, Optional
+import uvicorn
+
+from InventOps import SupplyChainEnv
+from InventOps.models import Action
+
+app = FastAPI(title="InventOps OpenEnv Server")
+
+# Global environment instance (single session)
+_env: Optional[SupplyChainEnv] = None
+_current_task: str = "easy"
 
 
-class Handler(BaseHTTPRequestHandler):
+# ── Request / Response models ─────────────────────────────────────────────────
 
-    def log_message(self, fmt, *args):
-        print(f"[server] {self.command} {self.path}", flush=True)
+class ResetRequest(BaseModel):
+    task_id: str = "easy"
+    seed: int = 42
 
-    def _send_json(self, code: int, body: dict):
-        data = json.dumps(body).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(data)
 
-    def do_GET(self):
-        self._send_json(200, {"status": "ok", "env": "inventops", "path": self.path})
+class StepRequest(BaseModel):
+    action: dict[str, Any]
 
-    def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        if length:
-            self.rfile.read(length)
-        self._send_json(200, {"status": "ok", "message": "InventOps environment ready"})
 
-    def do_OPTIONS(self):
-        self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.end_headers()
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
+def obs_to_dict(obs) -> dict:
+    return {
+        "day": obs.day,
+        "episode_length": obs.episode_length,
+        "inventory_levels": obs.inventory_levels,
+        "pending_orders": [o.model_dump() for o in obs.pending_orders],
+        "demand_forecast": obs.demand_forecast,
+        "warehouse_capacity_remaining": obs.warehouse_capacity_remaining,
+        "supplier_status": {k: v.model_dump() for k, v in obs.supplier_status.items()},
+        "holding_costs": obs.holding_costs,
+        "stockout_penalties": obs.stockout_penalties,
+        "budget_remaining": obs.budget_remaining,
+    }
+
+
+# ── OpenEnv endpoints ─────────────────────────────────────────────────────────
+
+@app.post("/reset")
+def reset(request: ResetRequest = ResetRequest()):
+    global _env, _current_task
+    _current_task = request.task_id
+    _env = SupplyChainEnv(task_id=request.task_id, seed=request.seed)
+    obs = _env.reset()
+    return {
+        "observation": obs_to_dict(obs),
+        "done": False,
+    }
+
+
+@app.post("/step")
+def step(request: StepRequest):
+    global _env
+    if _env is None:
+        raise HTTPException(status_code=400, detail="Environment not initialized. Call /reset first.")
+
+    try:
+        allowed = {"action_type", "sku_id", "quantity", "source_warehouse", "target_warehouse"}
+        filtered = {k: v for k, v in request.action.items() if k in allowed}
+        action = Action(**filtered)
+    except Exception as e:
+        action = Action(action_type="hold")
+
+    obs, reward, done, info = _env.step(action)
+
+    score = None
+    if done:
+        score = _env.grade()
+
+    return {
+        "observation": obs_to_dict(obs),
+        "reward": reward,
+        "done": done,
+        "info": info,
+        "score": score,
+    }
+
+
+@app.get("/state")
+def state():
+    global _env
+    if _env is None:
+        return {"initialized": False}
+    return _env.state()
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "env": "inventops"}
+
+
+@app.get("/schema")
+def schema():
+    return {
+        "observation": {
+            "type": "object",
+            "properties": {
+                "day": {"type": "integer"},
+                "episode_length": {"type": "integer"},
+                "inventory_levels": {"type": "object"},
+                "pending_orders": {"type": "array"},
+                "demand_forecast": {"type": "object"},
+                "warehouse_capacity_remaining": {"type": "object"},
+                "supplier_status": {"type": "object"},
+                "budget_remaining": {"type": ["number", "null"]},
+            }
+        },
+        "action": {
+            "type": "object",
+            "properties": {
+                "action_type": {"type": "string", "enum": ["order", "transfer", "hold"]},
+                "sku_id": {"type": "string"},
+                "quantity": {"type": "integer"},
+                "target_warehouse": {"type": "string"},
+                "source_warehouse": {"type": "string"},
+            },
+            "required": ["action_type"]
+        }
+    }
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    port = 7860
-    print(f"[server] Starting on 0.0.0.0:{port}", flush=True)
-    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    uvicorn.run(app, host="0.0.0.0", port=7860)
