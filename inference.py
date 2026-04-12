@@ -1,47 +1,41 @@
 """
 inference.py — InventOps Submission Inference Script
-=====================================================
-Runs all 3 tasks (easy, medium, hard) using an OpenAI-compatible LLM client.
-Emits structured [START] / [STEP] / [END] logs to stdout.
-
-Required environment variables:
-    API_BASE_URL   LLM endpoint  (default: https://router.huggingface.co/v1)
-    MODEL_NAME     Model ID      (default: Qwen/Qwen2.5-72B-Instruct)
-    HF_TOKEN       API key
-
-Usage:
-    HF_TOKEN=hf_... python inference.py
-    HF_TOKEN=hf_... API_BASE_URL=https://... MODEL_NAME=... python inference.py
 """
-
 from __future__ import annotations
 
 import json
 import os
-import textwrap
+import time
 from typing import Optional
 
 from openai import OpenAI
 
-# Env config 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
-API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "dummy")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
+MODEL_NAME   = os.getenv("MODEL_NAME", "llama-3.1-8b-instant")
+API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
-BENCHMARK    = "inventops"
-TASKS        = ["easy", "medium", "hard"]
-TEMPERATURE  = 0.2
-MAX_TOKENS   = 256
+BENCHMARK   = "inventops"
+TASKS       = ["easy", "medium", "hard"]
+TEMPERATURE = 0.1  
+MAX_TOKENS  = 60    
 
 
-# Structured logging 
+SYSTEM_PROMPT = (
+    "Inventory manager. Respond with ONE JSON action only, no explanation.\n"
+    "Order: {\"action_type\":\"order\",\"sku_id\":\"SKU_01\",\"quantity\":100,\"target_warehouse\":\"WH_1\"}\n"
+    "Transfer: {\"action_type\":\"transfer\",\"sku_id\":\"SKU_01\",\"quantity\":50,\"source_warehouse\":\"WH_N\",\"target_warehouse\":\"WH_S\"}\n"
+    "Hold: {\"action_type\":\"hold\"}\n"
+    "Rules: never order from disrupted supplier. avoid stockouts. avoid capacity breach."
+)
+
+
+# ── Structured logging ────────────────────────────────────────────────────────
 
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
-    # Sanitise action string: remove newlines so it stays on one line
     action_clean = action.replace("\n", " ").replace("\r", "")
     error_val = error if error else "null"
     print(
@@ -59,94 +53,69 @@ def log_end(success: bool, steps: int, score: float, rewards: list[float]) -> No
         flush=True,
     )
 
-
-# System prompt 
-
-SYSTEM_PROMPT = textwrap.dedent("""
-    You are an autonomous inventory manager for a multi-warehouse supply chain.
-    Your goal is to minimize total cost while maintaining high service level (fill demand).
-
-    DECISION RULES:
-    - Check supplier status before ordering. Disrupted suppliers cannot fulfil orders.
-    - Check pending in-transit orders before placing new ones. Avoid duplicating orders.
-    - Order early enough to cover lead time. If lead time is 3 days, order before you run out.
-    - Transfer stock between warehouses when one has excess and another is low.
-    - Hold if no action is needed. Never order speculatively.
-
-    COST AWARENESS:
-    - Holding cost accrues every day per unit held.
-    - Stockout penalty = 2× unit margin per unmet unit. Stockouts are very expensive.
-    - Fixed order cost charged per purchase order placed.
-    - Capacity breach triggers a large fixed penalty. Never exceed warehouse capacity.
-
-    Respond with EXACTLY ONE JSON object and nothing else:
-    {"action_type": "order"|"transfer"|"hold", "sku_id": "...", "quantity": N,
-     "target_warehouse": "...", "source_warehouse": "..."}
-
-    For "hold": {"action_type": "hold"}
-    For "order": {"action_type": "order", "sku_id": "SKU_01", "quantity": 150, "target_warehouse": "WH_1"}
-    For "transfer": {"action_type": "transfer", "sku_id": "SKU_01", "quantity": 50,
-                     "source_warehouse": "WH_N", "target_warehouse": "WH_S"}
-""").strip()
-
-
-# ── LLM call 
-
 def format_observation(obs) -> str:
-    """Convert Observation object to a compact LLM prompt."""
-    inventory_lines = "\n".join(
-        f"  {sku}: " + " | ".join(f"{wh}={qty}" for wh, qty in whs.items())
-        for sku, whs in obs.inventory_levels.items()
-    )
-    pending = "\n".join(
-        f"  {o.sku_id}: {o.quantity} units → {o.warehouse_id} (arrives day {o.arrival_day})"
+    # Only show SKUs at risk (< 5 days cover)
+    low_stock = []
+    for sku, whs in obs.inventory_levels.items():
+        total = sum(whs.values())
+        forecast = obs.demand_forecast.get(sku, 0)
+        days_cover = (total / forecast) if forecast > 0 else 99
+        if days_cover < 5:
+            wh_str = ",".join(f"{wh}:{qty}" for wh, qty in whs.items())
+            low_stock.append(f"{sku}({wh_str},cover:{days_cover:.1f}d)")
+
+    inv_str = " ".join(low_stock) if low_stock else "all_ok"
+
+    # Pending orders — compact
+    pending_str = " ".join(
+        f"{o.sku_id}+{o.quantity}@{o.warehouse_id}d{o.arrival_day}"
         for o in obs.pending_orders
-    ) or "  None"
-    supplier_lines = "\n".join(
-        f"  {sid}: {s.status.upper()}"
-        + (f" (recovers day {s.recovery_day})" if s.status == "disrupted" else "")
+    ) or "none"
+
+    # Disrupted suppliers only
+    disrupted = [
+        f"{sid}(rec:d{s.recovery_day})"
         for sid, s in obs.supplier_status.items()
+        if s.status == "disrupted"
+    ]
+    sup_str = " ".join(disrupted) if disrupted else "all_ok"
+
+    # Capacity free per warehouse
+    cap_str = " ".join(
+        f"{wh}:{free}free"
+        for wh, free in obs.warehouse_capacity_remaining.items()
     )
-    forecast_lines = "\n".join(
-        f"  {sku}: {val:.1f} units/day" for sku, val in obs.demand_forecast.items()
-    )
-    budget_line = (
-        f"\nBudget remaining: ${obs.budget_remaining:.0f}"
-        if obs.budget_remaining is not None else ""
-    )
-    capacity_lines = "\n".join(
-        f"  {wh}: {cap} units free" for wh, cap in obs.warehouse_capacity_remaining.items()
-    )
+
+    budget_str = f" budget:{obs.budget_remaining:.0f}" if obs.budget_remaining is not None else ""
+
     return (
-        f"Day {obs.day} of {obs.episode_length}{budget_line}\n\n"
-        f"INVENTORY:\n{inventory_lines}\n\n"
-        f"IN TRANSIT:\n{pending}\n\n"
-        f"DEMAND FORECAST (7-day avg):\n{forecast_lines}\n\n"
-        f"WAREHOUSE CAPACITY FREE:\n{capacity_lines}\n\n"
-        f"SUPPLIER STATUS:\n{supplier_lines}\n\n"
-        f"Respond with ONE JSON action object."
+        f"d{obs.day}/{obs.episode_length}{budget_str} "
+        f"lowstock:{inv_str} "
+        f"intransit:{pending_str} "
+        f"disrupted:{sup_str} "
+        f"capacity:{cap_str}"
     )
 
 
-def get_action(client: OpenAI, obs) -> tuple[str, dict]:
-    """Call LLM and parse response into an action dict. Falls back to hold."""
+# ── LLM call ──────────────────────────────────────────────────────────────────
+
+def get_action(client: OpenAI, obs):
     from InventOps.models import Action
 
-    user_prompt = format_observation(obs)
-    raw = '{"action_type": "hold"}'
+    raw = '{"action_type":"hold"}'
     try:
         completion = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": user_prompt},
+                {"role": "user",   "content": format_observation(obs)},
             ],
             temperature=TEMPERATURE,
             max_tokens=MAX_TOKENS,
         )
         raw = (completion.choices[0].message.content or "").strip()
 
-        # Strip markdown code fences if model wraps JSON
+        # Strip markdown fences if model wraps JSON
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -156,18 +125,16 @@ def get_action(client: OpenAI, obs) -> tuple[str, dict]:
         data = json.loads(raw)
         allowed = {"action_type", "sku_id", "quantity", "source_warehouse", "target_warehouse"}
         filtered = {k: v for k, v in data.items() if k in allowed}
-        action = Action(**filtered)
-        return raw, action
+        return raw, Action(**filtered)
 
     except Exception as exc:
-        print(f"[DEBUG] LLM parse error: {exc} | raw={raw!r}", flush=True)
+        print(f"[DEBUG] parse error: {exc} | raw={raw!r}", flush=True)
         return raw, Action(action_type="hold")
 
 
-#  Episode runner 
+# ── Episode runner ────────────────────────────────────────────────────────────
 
 def run_episode(client: OpenAI, task_id: str) -> dict:
-    """Run one full episode for task_id. Returns result dict."""
     from InventOps import SupplyChainEnv
 
     env = SupplyChainEnv(task_id=task_id, seed=42)
@@ -177,7 +144,6 @@ def run_episode(client: OpenAI, task_id: str) -> dict:
     steps_taken = 0
     score = 0.0
     success = False
-    error_msg = None
 
     log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
@@ -205,9 +171,7 @@ def run_episode(client: OpenAI, task_id: str) -> dict:
         success = score >= 0.5
 
     except Exception as exc:
-        print(f"[DEBUG] Episode error: {exc}", flush=True)
-        score = 0.0
-        success = False
+        print(f"[DEBUG] episode error: {exc}", flush=True)
 
     finally:
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
@@ -215,27 +179,25 @@ def run_episode(client: OpenAI, task_id: str) -> dict:
     return {"task_id": task_id, "score": score, "success": success, "steps": steps_taken}
 
 
-# Main 
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-
-    print(f"[INFO] InventOps inference | model={MODEL_NAME} | tasks={TASKS}", flush=True)
+    print(f"[INFO] model={MODEL_NAME} tasks={TASKS}", flush=True)
 
     results = []
-    for task_id in TASKS:
+    for i, task_id in enumerate(TASKS):
         result = run_episode(client, task_id)
         results.append(result)
+        # Pause between tasks to avoid rate limit spikes
+        if i < len(TASKS) - 1:
+            time.sleep(3)
 
-    # Summary
     print("\n[SUMMARY]", flush=True)
-    print(f"{'Task':<10} {'Score':>7} {'Success':>9} {'Steps':>7}", flush=True)
-    print("-" * 38, flush=True)
+    print(f"{'Task':<10} {'Score':>7} {'Steps':>7}", flush=True)
+    print("-" * 28, flush=True)
     for r in results:
-        print(
-            f"{r['task_id']:<10} {r['score']:>7.3f} {str(r['success']):>9} {r['steps']:>7}",
-            flush=True,
-        )
+        print(f"{r['task_id']:<10} {r['score']:>7.3f} {r['steps']:>7}", flush=True)
     composite = sum(r["score"] for r in results) / len(results)
     print(f"\n{'Composite':<10} {composite:>7.3f}", flush=True)
 
