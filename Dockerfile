@@ -2,36 +2,32 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System deps
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Step 1: copy ONLY requirements first (layer cache friendly)
 COPY requirements.txt .
-
-# Step 2: install third-party deps (no project code needed yet)
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-# Step 3: copy the rest of the project
 COPY . .
 
-# Step 4: install the local package NOW (pyproject.toml is available)
 RUN pip install --no-cache-dir -e .
 
-# Step 5: sanity checks — fail build if anything is missing
+# Sanity checks
 RUN python -c "from openai import OpenAI; print('openai OK')"
+RUN python -c "from fastapi import FastAPI; print('fastapi OK')"
 RUN python -c "from InventOps import SupplyChainEnv; print('InventOps OK')"
-RUN test -f /app/server.py    || (echo "ERROR: server.py missing"    && exit 1)
-RUN test -f /app/inference.py || (echo "ERROR: inference.py missing"  && exit 1)
+RUN python -c "from server.app import app, main; print('server.app OK')"
+RUN test -f /app/server/app.py || (echo "ERROR: server/app.py missing" && exit 1)
+RUN test -f /app/inference.py  || (echo "ERROR: inference.py missing"  && exit 1)
 
-EXPOSE 8080
+EXPOSE 7860
 
 ENV PYTHONPATH=/app
 ENV API_BASE_URL="https://api.groq.com/openai/v1"
 ENV MODEL_NAME="llama-3.1-8b-instant"
 
-HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -sf -X POST http://localhost:8080/reset || exit 1
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -sf http://localhost:7860/health || exit 1
 
-CMD ["sh", "-c", "python server.py & sleep 2 && python inference.py"]
+CMD ["sh", "-c", "uvicorn server.app:app --host 0.0.0.0 --port 7860 & SERVER_PID=$! && sleep 3 && python inference.py; kill $SERVER_PID 2>/dev/null; wait $SERVER_PID 2>/dev/null"]

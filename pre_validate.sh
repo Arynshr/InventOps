@@ -342,7 +342,16 @@ else
     warn "Check Space logs at: https://huggingface.co/spaces"
   else
     fail "POST /reset returned HTTP $HTTP_CODE (expected 200)"
-    warn "Space may still be booting — wait 2-3 min and retry"
+    BODY=$(cat /tmp/hf_ping.out 2>/dev/null || echo "")
+    warn "Response body: $BODY"
+    warn "Trying GET /health to check if server is up at all..."
+    HEALTH=$(curl -s -o /dev/null -w "%{http_code}" "$HF_URL/health" --max-time 10 2>/dev/null)
+    info "GET /health returned: $HEALTH"
+    warn "Trying POST / (root) in case HF proxy strips path..."
+    ROOT=$(curl -s -o /tmp/hf_root.out -w "%{http_code}" -X POST "$HF_URL/" \
+      -H "Content-Type: application/json" -d '{}' --max-time 10 2>/dev/null)
+    ROOT_BODY=$(cat /tmp/hf_root.out 2>/dev/null || echo "")
+    info "POST / returned: $ROOT — $ROOT_BODY"
     warn "Check Space logs at: https://huggingface.co/spaces"
   fi
 fi
