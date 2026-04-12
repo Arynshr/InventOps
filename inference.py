@@ -182,6 +182,12 @@ def run_episode(client: OpenAI, task_id: str) -> dict:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    # Guard: ensure we only run once even if container restarts
+    if os.environ.get("INFERENCE_RUNNING"):
+        print("[INFO] Already running, exiting.", flush=True)
+        return
+    os.environ["INFERENCE_RUNNING"] = "1"
+    
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     print(f"[INFO] model={MODEL_NAME} tasks={TASKS}", flush=True)
 
