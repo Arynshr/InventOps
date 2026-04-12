@@ -1,21 +1,13 @@
 """
 server.py — FastAPI OpenEnv-compliant HTTP server for InventOps.
-
-Exposes the required OpenEnv endpoints:
-    POST /reset   → {"observation": {...}, "done": false}
-    POST /step    → {"observation": {...}, "reward": float, "done": bool}
-    GET  /state   → {"day": int, "done": bool, ...}
-    GET  /health  → {"status": "ok"}
-    GET  /schema  → {"observation": {...}, "action": {...}}
-
-Run with:
-    uvicorn server:app --host 0.0.0.0 --port 7860
+No openenv-core dependency — plain FastAPI only.
 """
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 from typing import Any, Optional
+
+from fastapi import FastAPI
+from pydantic import BaseModel
 import uvicorn
 
 from InventOps import SupplyChainEnv
@@ -23,12 +15,11 @@ from InventOps.models import Action
 
 app = FastAPI(title="InventOps OpenEnv Server")
 
-# Global environment instance (single session)
+# Single global env instance
 _env: Optional[SupplyChainEnv] = None
-_current_task: str = "easy"
 
 
-# ── Request / Response models ─────────────────────────────────────────────────
+# ── Request models ────────────────────────────────────────────────────────────
 
 class ResetRequest(BaseModel):
     task_id: str = "easy"
@@ -56,12 +47,16 @@ def obs_to_dict(obs) -> dict:
     }
 
 
-# ── OpenEnv endpoints ─────────────────────────────────────────────────────────
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "env": "inventops"}
+
 
 @app.post("/reset")
 def reset(request: ResetRequest = ResetRequest()):
-    global _env, _current_task
-    _current_task = request.task_id
+    global _env
     _env = SupplyChainEnv(task_id=request.task_id, seed=request.seed)
     obs = _env.reset()
     return {
@@ -74,21 +69,17 @@ def reset(request: ResetRequest = ResetRequest()):
 def step(request: StepRequest):
     global _env
     if _env is None:
-        raise HTTPException(status_code=400, detail="Environment not initialized. Call /reset first.")
-
+        _env = SupplyChainEnv(task_id="easy", seed=42)
+        _env.reset()
     try:
         allowed = {"action_type", "sku_id", "quantity", "source_warehouse", "target_warehouse"}
         filtered = {k: v for k, v in request.action.items() if k in allowed}
         action = Action(**filtered)
-    except Exception as e:
+    except Exception:
         action = Action(action_type="hold")
 
     obs, reward, done, info = _env.step(action)
-
-    score = None
-    if done:
-        score = _env.grade()
-
+    score = _env.grade() if done else None
     return {
         "observation": obs_to_dict(obs),
         "reward": reward,
@@ -100,15 +91,9 @@ def step(request: StepRequest):
 
 @app.get("/state")
 def state():
-    global _env
     if _env is None:
         return {"initialized": False}
     return _env.state()
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok", "env": "inventops"}
 
 
 @app.get("/schema")
@@ -140,8 +125,6 @@ def schema():
         }
     }
 
-
-# ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=7860)
