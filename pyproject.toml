@@ -9,6 +9,7 @@ dependencies = [
     "numpy>=1.26,<3.0",
     "groq>=0.9,<1.0",
     "pytest>=9.0.3",
+    "openai>=2.31.0",
 ]
 
 [project.optional-dependencies]

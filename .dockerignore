@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+.env
+uv.lock
+tests/
+rlvr/prompts/rounds/
+.pytest_cache/
+*.md
+LICENSE
