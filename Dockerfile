@@ -19,15 +19,14 @@ RUN python -c "from InventOps import SupplyChainEnv; print('InventOps OK')"
 RUN test -f /app/server.py    || (echo "ERROR: server.py missing"    && exit 1)
 RUN test -f /app/inference.py || (echo "ERROR: inference.py missing" && exit 1)
 
-EXPOSE 8080
+# HF Spaces requires port 7860
+EXPOSE 7860
 
 ENV PYTHONPATH=/app
 ENV API_BASE_URL="https://api.groq.com/openai/v1"
 ENV MODEL_NAME="llama-3.1-8b-instant"
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -sf -X POST http://localhost:8080/reset || exit 1
+    CMD curl -sf http://localhost:7860/health || exit 1
 
-# Use a shell script as entrypoint so server starts first,
-# inference runs exactly once, then container exits cleanly
 CMD ["sh", "-c", "python server.py & SERVER_PID=$! && sleep 2 && python inference.py; kill $SERVER_PID 2>/dev/null; wait $SERVER_PID 2>/dev/null"]
