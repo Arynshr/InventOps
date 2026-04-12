@@ -1,6 +1,5 @@
 """
-server.py — FastAPI OpenEnv-compliant HTTP server for InventOps.
-No openenv-core dependency — plain FastAPI only.
+server/app.py — FastAPI OpenEnv-compliant HTTP server for InventOps.
 """
 from __future__ import annotations
 
@@ -15,11 +14,8 @@ from InventOps.models import Action
 
 app = FastAPI(title="InventOps OpenEnv Server")
 
-# Single global env instance
 _env: Optional[SupplyChainEnv] = None
 
-
-# ── Request models ────────────────────────────────────────────────────────────
 
 class ResetRequest(BaseModel):
     task_id: str = "easy"
@@ -29,8 +25,6 @@ class ResetRequest(BaseModel):
 class StepRequest(BaseModel):
     action: dict[str, Any]
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def obs_to_dict(obs) -> dict:
     return {
@@ -47,8 +41,6 @@ def obs_to_dict(obs) -> dict:
     }
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
-
 @app.get("/health")
 def health():
     return {"status": "ok", "env": "inventops"}
@@ -59,10 +51,7 @@ def reset(request: ResetRequest = ResetRequest()):
     global _env
     _env = SupplyChainEnv(task_id=request.task_id, seed=request.seed)
     obs = _env.reset()
-    return {
-        "observation": obs_to_dict(obs),
-        "done": False,
-    }
+    return {"observation": obs_to_dict(obs), "done": False}
 
 
 @app.post("/step")
@@ -126,5 +115,18 @@ def schema():
     }
 
 
+def main() -> None:
+    """
+    Start the InventOps OpenEnv server using Uvicorn.
+    Called by openenv validate and multi-mode deployment.
+    """
+    uvicorn.run(
+        "server.app:app",
+        host="0.0.0.0",
+        port=7860,
+        reload=False,
+    )
+
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+    main()
