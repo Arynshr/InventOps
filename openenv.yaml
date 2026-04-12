@@ -5,7 +5,7 @@ description: >
   reorder policy, warehouse routing, and demand forecasting under
   stochastic lead times and supplier disruptions.
 
-server_entry_point: server.app.main
+entrypoint: server.app:main
 
 tasks:
   - id: easy
