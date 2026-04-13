@@ -1,13 +1,3 @@
----
-
-title: InventOps
-emoji: 📦
-colorFrom: blue
-colorTo: green
-sdk: docker
-pinned: false
--------------
-
 # InventOps — Supply Chain RL Environment
 
 > A production-grade, OpenEnv-compliant reinforcement learning environment for **inventory optimization and supply chain decision-making**.
