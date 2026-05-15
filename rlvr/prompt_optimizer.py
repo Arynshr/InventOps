@@ -1,10 +1,12 @@
 from __future__ import annotations
 import json
 import os
+import uuid
 from pathlib import Path
 from groq import Groq
 from InventOps import SupplyChainEnv
 from rlvr.agent import GroqAgent
+from metrics import get_logger
 
 
 OPTIMIZER_MODEL = "llama-3.1-70b-versatile"
@@ -26,6 +28,8 @@ class PromptOptimizer:
         self.episodes_per_round = episodes_per_round
         self.seeds = seeds or list(range(episodes_per_round))
         self.groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
+        self.run_id = f"rlvr-{uuid.uuid4().hex[:8]}"
+        self.logger = get_logger()
 
         with open(initial_prompt_path) as f:
             self.current_prompt = f.read()
@@ -61,6 +65,17 @@ class PromptOptimizer:
 
         prompt_path = self.output_dir / f"round_{round_num}.txt"
         prompt_path.write_text(self.current_prompt)
+
+        # Persist to SQLite
+        self.logger.log_rlvr_round(
+            run_id=self.run_id,
+            task_id=self.task_id,
+            round_num=round_num,
+            mean_score=mean_score,
+            min_score=min(scores),
+            max_score=max(scores),
+            failure_reasons=failure_reasons,
+        )
 
         print(f"Round {round_num}: mean={mean_score:.3f} "
               f"[{min(scores):.3f}, {max(scores):.3f}] "

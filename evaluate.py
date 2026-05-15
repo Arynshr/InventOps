@@ -13,8 +13,11 @@ import argparse
 import os
 import random
 import statistics
+import time
+import uuid
 from InventOps import SupplyChainEnv
 from InventOps.models import Action
+from metrics import get_logger
 
 
 TASKS = ["easy", "medium", "hard"]
@@ -49,16 +52,29 @@ def llm_agent_factory(prompt_path: str, model: str):
 
 # ── Runner ────────────────────────────────────────────────────────────────────
 
-def run_agent(agent_fn, task_id: str, seeds: list[int]) -> dict:
+def run_agent(agent_fn, task_id: str, seeds: list[int], agent_name: str = "unknown", run_id: str = "") -> dict:
+    logger = get_logger()
     scores = []
     for seed in seeds:
         env = SupplyChainEnv(task_id=task_id, seed=seed)
         obs = env.reset()
         done = False
+        steps = 0
         while not done:
             action = agent_fn(obs)
             obs, _, done, _ = env.step(action)
-        scores.append(env.grade())
+            steps += 1
+        score = env.grade()
+        scores.append(score)
+        logger.log_episode(
+            run_id=run_id,
+            task_id=task_id,
+            seed=seed,
+            score=score,
+            success=score >= 0.5,
+            steps=steps,
+            agent=agent_name,
+        )
     return {
         "mean":   round(statistics.mean(scores), 4),
         "std":    round(statistics.stdev(scores) if len(scores) > 1 else 0.0, 4),
@@ -120,6 +136,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     seeds = list(range(args.seeds))
+    run_id = f"eval-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+    print(f"[INFO] run_id={run_id}")
 
     agents: dict[str, callable] = {
         "hold-only": hold_agent,
@@ -142,7 +160,10 @@ if __name__ == "__main__":
         print(f"\nEvaluating: {agent_name}")
         for task_id in TASKS:
             print(f"  {task_id}...", end=" ", flush=True)
-            results[agent_name][task_id] = run_agent(agent_fn, task_id, seeds)
+            results[agent_name][task_id] = run_agent(
+                agent_fn, task_id, seeds,
+                agent_name=agent_name, run_id=run_id,
+            )
             print(f"mean={results[agent_name][task_id]['mean']:.3f}")
 
     print_report(results, args.seeds)

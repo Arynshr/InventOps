@@ -1,0 +1,53 @@
+version: "3.9"
+
+# Shared volume: both services read/write metrics/inventops.db
+volumes:
+  metrics_data:
+
+services:
+  # ── Core: InventOps inference + server ─────────────────────────────────────
+  inventops:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: inventops:latest
+    volumes:
+      - metrics_data:/app/metrics
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - API_BASE_URL=${API_BASE_URL:-https://api.groq.com/openai/v1}
+      - MODEL_NAME=${MODEL_NAME:-llama-3.1-8b-instant}
+      - PYTHONPATH=/app
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-X", "POST", "http://localhost:8080/reset"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  # ── Dashboard: Streamlit visualization ─────────────────────────────────────
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    image: inventops-dashboard:latest
+    volumes:
+      - metrics_data:/app/metrics
+    environment:
+      - INVENTOPS_DB=/app/metrics/inventops.db
+      - PYTHONPATH=/app
+    ports:
+      - "8501:8501"
+    depends_on:
+      - inventops
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8501/_stcore/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped

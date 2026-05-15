@@ -6,9 +6,12 @@ from __future__ import annotations
 import json
 import os
 import time
+import uuid
 from typing import Optional
 
 from openai import OpenAI
+
+from metrics import get_logger
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME", "llama-3.1-8b-instant")
@@ -99,11 +102,14 @@ def format_observation(obs) -> str:
 
 # ── LLM call ──────────────────────────────────────────────────────────────────
 
-def get_action(client: OpenAI, obs):
+def get_action(client: OpenAI, obs) -> tuple:
+    """Returns (raw_str, Action, latency_ms)."""
     from InventOps.models import Action
 
     raw = '{"action_type":"hold"}'
+    latency_ms: Optional[float] = None
     try:
+        t0 = time.perf_counter()
         completion = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
@@ -113,6 +119,7 @@ def get_action(client: OpenAI, obs):
             temperature=TEMPERATURE,
             max_tokens=MAX_TOKENS,
         )
+        latency_ms = (time.perf_counter() - t0) * 1000
         raw = (completion.choices[0].message.content or "").strip()
 
         # Strip markdown fences if model wraps JSON
@@ -125,19 +132,20 @@ def get_action(client: OpenAI, obs):
         data = json.loads(raw)
         allowed = {"action_type", "sku_id", "quantity", "source_warehouse", "target_warehouse"}
         filtered = {k: v for k, v in data.items() if k in allowed}
-        return raw, Action(**filtered)
+        return raw, Action(**filtered), latency_ms
 
     except Exception as exc:
         print(f"[DEBUG] parse error: {exc} | raw={raw!r}", flush=True)
-        return raw, Action(action_type="hold")
+        return raw, Action(action_type="hold"), latency_ms
 
 
 # ── Episode runner ────────────────────────────────────────────────────────────
 
-def run_episode(client: OpenAI, task_id: str) -> dict:
+def run_episode(client: OpenAI, task_id: str, run_id: str, seed: int = 42) -> dict:
     from InventOps import SupplyChainEnv
 
-    env = SupplyChainEnv(task_id=task_id, seed=42)
+    logger = get_logger()
+    env = SupplyChainEnv(task_id=task_id, seed=seed)
     obs = env.reset()
 
     rewards: list[float] = []
@@ -152,10 +160,11 @@ def run_episode(client: OpenAI, task_id: str) -> dict:
         step = 0
         while not done:
             step += 1
-            raw, action = get_action(client, obs)
+            raw, action, latency_ms = get_action(client, obs)
             obs, reward, done, info = env.step(action)
 
             error_msg = info.get("failure_reason")
+            rb = info.get("reward_breakdown")  # StepReward or None
             rewards.append(reward)
             steps_taken = step
 
@@ -167,6 +176,25 @@ def run_episode(client: OpenAI, task_id: str) -> dict:
                 error=error_msg,
             )
 
+            # Persist to SQLite
+            logger.log_step(
+                run_id=run_id,
+                task_id=task_id,
+                seed=seed,
+                step=step,
+                action_type=action.action_type,
+                reward=reward,
+                failure_reason=error_msg,
+                llm_latency_ms=latency_ms,
+                fulfillment=rb.fulfillment if rb else None,
+                holding_cost=rb.holding_cost if rb else None,
+                stockout_pen=rb.stockout_penalty if rb else None,
+                order_cost=rb.order_cost if rb else None,
+                transfer_cost=rb.transfer_cost if rb else None,
+                capacity_pen=rb.capacity_breach_penalty if rb else None,
+                bullwhip_pen=rb.bullwhip_penalty if rb else None,
+            )
+
         score = env.grade()
         success = score >= 0.5
 
@@ -175,6 +203,15 @@ def run_episode(client: OpenAI, task_id: str) -> dict:
 
     finally:
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+        logger.log_episode(
+            run_id=run_id,
+            task_id=task_id,
+            seed=seed,
+            score=score,
+            success=success,
+            steps=steps_taken,
+            agent="llm",
+        )
 
     return {"task_id": task_id, "score": score, "success": success, "steps": steps_taken}
 
@@ -185,9 +222,12 @@ def main() -> None:
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     print(f"[INFO] model={MODEL_NAME} tasks={TASKS}", flush=True)
 
+    run_id = f"inf-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+    print(f"[INFO] run_id={run_id}", flush=True)
+
     results = []
     for i, task_id in enumerate(TASKS):
-        result = run_episode(client, task_id)
+        result = run_episode(client, task_id, run_id=run_id)
         results.append(result)
         # Pause between tasks to avoid rate limit spikes
         if i < len(TASKS) - 1:
