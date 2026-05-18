@@ -1,10 +1,12 @@
 name: inventops
-version: 1.0.0
-domain: logistics
+version: "1.0.0"
 description: >
   Multi-echelon inventory optimization environment. Agents manage
   reorder policy, warehouse routing, and demand forecasting under
   stochastic lead times and supplier disruptions.
+
+entrypoint: server.app:main
+
 tasks:
   - id: easy
     name: single-sku-reorder
@@ -18,8 +20,21 @@ tasks:
     name: multi-warehouse-network
     difficulty: 3
     episode_length: 90
+
 observation_type: structured_dict
 action_type: discrete_parameterized
 reward_type: dense_shaped
+
 python: ">=3.11"
-entry_point: InventOps:SupplyChainEnv
+entry_point: "InventOps:SupplyChainEnv"
+
+dependencies:
+  - "openenv-core>=0.2.0"
+  - "pydantic>=2.7"
+  - "numpy>=1.26"
+  - "openai>=1.30"
+  - "groq>=0.9"
+  - "fastapi>=0.111"
+  - "uvicorn>=0.29"
+
+domain: logistics

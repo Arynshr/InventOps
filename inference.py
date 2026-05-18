@@ -100,8 +100,79 @@ def format_observation(obs) -> str:
     )
 
 
+def heuristic_action(obs):
+    from InventOps.models import Action
+
+    try:
+        inventory = obs.inventory_levels
+        demand = obs.demand_forecast
+        capacity = obs.warehouse_capacity_remaining
+
+        # ── Find most critical SKU ──
+        critical_sku = None
+        worst_cover = float("inf")
+
+        for sku, whs in inventory.items():
+            total = sum(whs.values())
+            d = demand.get(sku, 0)
+
+            cover = (total / d) if d > 0 else 99
+
+            if cover < worst_cover:
+                worst_cover = cover
+                critical_sku = sku
+
+        if critical_sku is None:
+            return '{"action_type":"hold"}', Action(action_type="hold")
+
+        whs = inventory[critical_sku]
+
+        # ── Find warehouses ──
+        target_wh = min(whs, key=lambda w: whs[w])  # lowest stock
+        source_wh = max(whs, key=lambda w: whs[w])  # highest stock
+
+        # ── Try transfer first ──
+        if source_wh != target_wh and whs[source_wh] > 0:
+            qty = max(1, (whs[source_wh] - whs[target_wh]) // 2)
+            free_cap = capacity.get(target_wh, 0)
+            qty = min(qty, free_cap)
+
+            if qty > 0:
+                action = {
+                    "action_type": "transfer",
+                    "sku_id": critical_sku,
+                    "quantity": qty,
+                    "source_warehouse": source_wh,
+                    "target_warehouse": target_wh,
+                }
+                return json.dumps(action), Action(**action)
+
+        # ── Otherwise order ──
+        best_wh = max(capacity, key=lambda w: capacity[w])
+        free_cap = capacity.get(best_wh, 0)
+
+        if free_cap > 0:
+            d = demand.get(critical_sku, 1)
+            qty = max(1, int(d * 5))  # ~5 days cover
+            qty = min(qty, free_cap)
+
+            action = {
+                "action_type": "order",
+                "sku_id": critical_sku,
+                "quantity": qty,
+                "target_warehouse": best_wh,
+            }
+            return json.dumps(action), Action(**action)
+
+        return '{"action_type":"hold"}', Action(action_type="hold")
+
+    except Exception as e:
+        print(f"[DEBUG] heuristic error: {e}", flush=True)
+        return '{"action_type":"hold"}', Action(action_type="hold")
+
 # ── LLM call ──────────────────────────────────────────────────────────────────
 
+<<<<<<< HEAD
 def get_action(client: OpenAI, obs) -> tuple:
     """Returns (raw_str, Action, latency_ms)."""
     from InventOps.models import Action
@@ -120,18 +191,50 @@ def get_action(client: OpenAI, obs) -> tuple:
             max_tokens=MAX_TOKENS,
         )
         latency_ms = (time.perf_counter() - t0) * 1000
+=======
+def get_action(client: Optional[OpenAI], obs):
+    from InventOps.models import Action
+
+    raw = '{"action_type":"hold"}'
+
+    # ── Fallback if no client ──
+    if client is None:
+        return raw, Action(action_type="hold")
+
+    try:
+        try:
+            completion = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": format_observation(obs)},
+                ],
+                temperature=TEMPERATURE,
+                max_tokens=MAX_TOKENS,
+            )
+        except Exception as api_err:
+            print(f"[DEBUG] API error: {api_err}", flush=True)
+            return raw, Action(action_type="hold")
+
+>>>>>>> origin/feat/agent
         raw = (completion.choices[0].message.content or "").strip()
 
-        # Strip markdown fences if model wraps JSON
+        # Strip markdown
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
             raw = raw.strip()
 
-        data = json.loads(raw)
+        try:
+            data = json.loads(raw)
+        except Exception as parse_err:
+            print(f"[DEBUG] JSON parse error: {parse_err} | raw={raw}", flush=True)
+            return raw, Action(action_type="hold")
+
         allowed = {"action_type", "sku_id", "quantity", "source_warehouse", "target_warehouse"}
         filtered = {k: v for k, v in data.items() if k in allowed}
+<<<<<<< HEAD
         return raw, Action(**filtered), latency_ms
 
     except Exception as exc:
@@ -142,6 +245,18 @@ def get_action(client: OpenAI, obs) -> tuple:
 # ── Episode runner ────────────────────────────────────────────────────────────
 
 def run_episode(client: OpenAI, task_id: str, run_id: str, seed: int = 42) -> dict:
+=======
+
+        return raw, Action(**filtered)
+
+    except Exception as exc:
+        print(f"[DEBUG] unexpected error: {exc} | raw={raw}", flush=True)
+        return raw, Action(action_type="hold")
+    
+# ── Episode runner ────────────────────────────────────────────────────────────
+
+def run_episode(client: Optional[OpenAI], task_id: str) -> dict:
+>>>>>>> origin/feat/agent
     from InventOps import SupplyChainEnv
 
     logger = get_logger()
@@ -219,28 +334,52 @@ def run_episode(client: OpenAI, task_id: str, run_id: str, seed: int = 42) -> di
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-    print(f"[INFO] model={MODEL_NAME} tasks={TASKS}", flush=True)
+    if os.environ.get("INFERENCE_RUNNING"):
+        print("[INFO] Already running, exiting.", flush=True)
+        return
+    os.environ["INFERENCE_RUNNING"] = "1"
+
+    # ── Safe client init ──
+    client = None
+    if API_KEY:
+        try:
+            client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+            print(f"[INFO] model={MODEL_NAME} tasks={TASKS}", flush=True)
+        except Exception as e:
+            print(f"[WARN] Client init failed: {e}", flush=True)
+            client = None
+    else:
+        print("[WARN] No API key found. Running in fallback mode.", flush=True)
 
     run_id = f"inf-{int(time.time())}-{uuid.uuid4().hex[:6]}"
     print(f"[INFO] run_id={run_id}", flush=True)
 
     results = []
     for i, task_id in enumerate(TASKS):
+<<<<<<< HEAD
         result = run_episode(client, task_id, run_id=run_id)
+=======
+        try:
+            result = run_episode(client, task_id)
+        except Exception as e:
+            print(f"[DEBUG] task {task_id} crashed: {e}", flush=True)
+            result = {"task_id": task_id, "score": 0.0, "success": False, "steps": 0}
+
+>>>>>>> origin/feat/agent
         results.append(result)
-        # Pause between tasks to avoid rate limit spikes
+
         if i < len(TASKS) - 1:
-            time.sleep(3)
+            time.sleep(2)
 
     print("\n[SUMMARY]", flush=True)
     print(f"{'Task':<10} {'Score':>7} {'Steps':>7}", flush=True)
     print("-" * 28, flush=True)
+
     for r in results:
         print(f"{r['task_id']:<10} {r['score']:>7.3f} {r['steps']:>7}", flush=True)
+
     composite = sum(r["score"] for r in results) / len(results)
     print(f"\n{'Composite':<10} {composite:>7.3f}", flush=True)
-
 
 if __name__ == "__main__":
     main()
