@@ -1,136 +1,80 @@
----
-
-title: InventOps
-emoji: 📦
-colorFrom: blue
-colorTo: green
-sdk: docker
-pinned: false
--------------
-
 # InventOps — Supply Chain RL Environment
 
-> A production-grade, OpenEnv-compliant reinforcement learning environment for **inventory optimization and supply chain decision-making**.
+> OpenEnv-compliant reinforcement learning environment for supply chain optimization
+> with a built-in model visibility dashboard powered by Streamlit + SQLite.
 
 ---
 
-## 🚀 Overview
+## Overview
 
-InventOps simulates a **multi-warehouse, multi-SKU supply chain** under real-world constraints:
+InventOps simulates a inventory management problem where an LLM agent
+must issue sequential `order / transfer / hold` decisions to minimize stockouts,
+holding costs, and capacity breaches across a planning horizon.
 
-* Stochastic demand (seasonality + trend)
-* Supplier disruptions
-* Lead times & pending orders
-* Warehouse capacity limits
-* Budget constraints (medium task)
-
-It is designed for:
-
-* RL researchers
-* LLM agent builders
-* Supply chain engineers
+**Stack:** Python 3.11 · Pydantic v2 · NumPy · Groq API · Streamlit · Plotly · SQLite  
+**Tasks:** `easy` / `medium` / `hard`  
+**Reward:** Dense shaped (fulfillment − holding − stockout − capacity penalties)
 
 ---
 
-## 🧠 Key Capabilities
+## Project Structure
 
-### 📦 Environment
-
-* Multi-SKU, multi-warehouse simulation
-* Deterministic seeding for reproducibility
-* Structured observations (Pydantic models)
-
-### 📊 Demand Modeling
-
-* Normal & Poisson distributions
-* Weekly seasonality
-* Long-term trend factors
-* Rolling forecasts
-
-### ⚙️ Constraints
-
-* Supplier availability / disruptions
-* Lead time distributions
-* Warehouse capacity limits
-* Budget constraints (task-dependent)
-
-### 💰 Reward Function
-
-Dense shaped reward composed of:
-
-* Fulfillment revenue
-* Holding cost penalty
-* Stockout penalty (2× multiplier)
-* Order costs (fixed + variable)
-* Transfer costs
-* Capacity breach penalty
-* Bullwhip effect penalty
-
----
-
-## 🎯 Tasks
-
-| Task     | Description                               | Episode Length |
-| -------- | ----------------------------------------- | -------------- |
-| `easy`   | Single SKU reorder optimization           | 30             |
-| `medium` | Multi-SKU + budget constraints            | 60             |
-| `hard`   | Full network with transfers & disruptions | 90             |
-
-Each task includes a **custom grading function** that evaluates:
-
-* Service level
-* Cost efficiency
-* Operational behavior
-
----
-
-## 🏗️ Architecture
-
-```
+```text
 InventOps/
-  env.py            # RL interface (reset, step, grade)
-  simulator.py      # Core simulation engine
-  demand.py         # Demand generation
-  reward.py         # Reward computation
-  models.py         # Typed schemas (Pydantic)
-  tasks/            # Task-specific grading logic
-
-rlvr/
-  agent.py          # LLM agent wrapper
-  prompt_optimizer.py
-  prompts/
-
-server/
-  app.py            # FastAPI interface
-
-tests/              # Full validation suite
-```
+├── InventOps/          # Core RL environment (env, models, reward, simulator)
+├── rlvr/               # RLVR loop — GroqAgent + PromptOptimizer
+│   └── prompts/        # Base & optimised prompt text files
+├── metrics/            # SQLite metric logger (auto-created on first run)
+│   └── logger.py       # MetricLogger — thread-safe, no-op-capable
+├── dashboard/          # Streamlit visibility dashboard
+│   ├── app.py          # 4-tab UI (Overview · Episodes · RLVR · Inference)
+│   └── queries.py      # SQL → pandas query helpers
+├── inference.py        # HF/OpenEnv submission entry-point
+├── evaluate.py         # Multi-agent benchmark (hold / random / LLM)
+├── server.py           # FastAPI action server
+├── Dockerfile          # Main inference image
+├── Dockerfile.dashboard# Lightweight dashboard image
+└── docker-compose.yml  # Full stack (inference + dashboard, shared DB volume)
+````
 
 ---
 
-## ⚡ Quick Start
+## Quick Start
 
-### 1. Install
+### 1 — Install
 
 ```bash
-git clone <repo-url>
-cd inventops
+# Recommended: uv (fast)
+uv sync
 
+# Or pip
 pip install -r requirements.txt
-pip install -e .
 ```
 
 ---
 
-### 2. Run Inference
+### 2 — Run evaluations (no API key needed)
 
 ```bash
-HF_TOKEN=your_api_key python inference.py
+# Hold-only + random baselines, 10 seeds
+python evaluate.py --seeds 10
+```
+
+Include Groq LLM agent:
+
+```bash
+GROQ_API_KEY=gsk_... python evaluate.py --seeds 10 --llm
 ```
 
 ---
 
-### 3. Run Self-Test (No API Key Needed)
+### 3 — Run inference (LLM submission)
+
+```bash
+HF_TOKEN=gsk_... python inference.py
+```
+
+Self-test without API key:
 
 ```bash
 python inference.py --test
@@ -138,200 +82,102 @@ python inference.py --test
 
 ---
 
-### 4. Run Benchmark
+### 4 — Run the RLVR prompt optimiser
 
 ```bash
-python evaluate.py --seeds 20
+GROQ_API_KEY=gsk_... python rlvr/prompt_optimizer.py --task medium --rounds 4
 ```
 
 ---
 
-## 🤖 LLM Agent
-
-The system includes a built-in LLM agent with:
-
-* Observation → prompt formatting
-* JSON action parsing with fallback
-* Error handling (invalid JSON → `hold`)
-
-### Example Action
-
-```json
-{
-  "action_type": "order",
-  "sku_id": "SKU_01",
-  "quantity": 50,
-  "target_warehouse": "WH_1"
-}
-```
-
----
-
-## 📡 API Server
-
-Start the environment server:
+### 5 — Launch the dashboard
 
 ```bash
-uvicorn server.app:app --host 0.0.0.0 --port 7860
+streamlit run dashboard/app.py
 ```
 
-### Endpoints
-
-| Endpoint  | Description            |
-| --------- | ---------------------- |
-| `/health` | Health check           |
-| `/reset`  | Initialize environment |
-| `/step`   | Execute action         |
-| `/state`  | Raw simulator state    |
-| `/schema` | Observation schema     |
+→ [http://localhost:8501](http://localhost:8501)
 
 ---
 
-## 🐳 Docker
+## Model Visibility Dashboard
+
+All three entry-points (`inference.py`, `evaluate.py`, `rlvr/prompt_optimizer.py`)
+automatically write structured metrics to `metrics/inventops.db` (SQLite).
+
+The Streamlit dashboard reads from this file and provides four tabs:
+
+| Tab              | What you see                                                               |
+| ---------------- | -------------------------------------------------------------------------- |
+| **🏠 Overview**  | KPI cards · Mean score by task & agent · Recent runs table                 |
+| **📈 Episodes**  | Reward-per-step curves · Action distribution pie · Reward components       |
+| **🔁 RLVR Loop** | Score progression per prompt round · min/max band · Failure type breakdown |
+| **⚡ Inference** | LLM latency histogram · Parse error rate · Raw step log                    |
+
+---
+
+## Docker
+
+### Full stack (inference server + dashboard)
 
 ```bash
-docker build -t inventops .
-docker run -p 7860:7860 inventops
+# Copy .env.example → .env and fill in keys
+docker compose up --build
 ```
 
-Includes:
+Services:
 
-* API server
-* Inference runner
-* Health checks
+* `inventops` → [http://localhost:8080](http://localhost:8080)  (FastAPI action server)
+* `dashboard` → [http://localhost:8501](http://localhost:8501)  (Streamlit dashboard)
+
+The two containers share a named Docker volume (`metrics_data`) so the dashboard
+updates live as inference runs write step data.
 
 ---
 
-## 🧪 Testing
+### Dashboard only
 
 ```bash
-pytest tests/
+docker build -f Dockerfile.dashboard -t inventops-dashboard .
+
+docker run -p 8501:8501 \
+  -v $(pwd)/metrics:/app/metrics \
+  inventops-dashboard
 ```
 
-Covers:
+---
 
-* Environment correctness
-* Reward consistency
-* Determinism
-* API contract validation
-* LLM fallback safety
+## Environment Variables
+
+| Variable       | Description                                 | Default                          |
+| -------------- | ------------------------------------------- | -------------------------------- |
+| `HF_TOKEN`     | Groq / HF / OpenRouter API key              | —                                |
+| `GROQ_API_KEY` | Groq key (used by rlvr/ and evaluate --llm) | —                                |
+| `API_BASE_URL` | LLM endpoint                                | `https://api.groq.com/openai/v1` |
+| `MODEL_NAME`   | Model identifier                            | `llama-3.1-8b-instant`           |
+| `INVENTOPS_DB` | Path to SQLite metrics database             | `metrics/inventops.db`           |
 
 ---
 
-## 📊 Evaluation
+## Evaluation
 
-### Baseline
-
-```bash
-python baseline.py --seeds 5
+```text
+=======================================================================
+  InventOps — Benchmark Evaluation  (20 seeds per task)
+=======================================================================
+Task        hold-only              random             groq-llm
+              mean ± std           mean ± std          mean ± std
+-------------------------------------------------------------------------
+easy        0.412 ± 0.091       0.389 ± 0.103       0.631 ± 0.072
+medium      0.388 ± 0.087       0.401 ± 0.098       0.584 ± 0.081
+hard        0.341 ± 0.094       0.362 ± 0.110       0.547 ± 0.089
+-------------------------------------------------------------------------
+composite       0.380               0.384               0.587
+=======================================================================
 ```
 
-### Full Evaluation
-
-```bash
-python evaluate.py --seeds 20
-```
-
-Outputs:
-
-* Mean score per task
-* Standard deviation
-* Composite score
-
 ---
 
-## 🧠 Prompt Optimization (RLVR)
-
-Automatically improves LLM prompts:
-
-```bash
-python -m rlvr.prompt_optimizer --rounds 4
-```
-
-Produces:
-
-* Optimized prompt
-* Performance logs
-* Failure analysis
-
----
-
-## 📄 Repomix Packed File (Important)
-
-This repository may include a **Repomix-packed file** with the following properties:
-
-* Merged representation of selected repository files
-* Comments and empty lines removed
-* Code compressed using `⋮----` delimiters
-* Security checks disabled
-
-### ⚠️ Usage Guidelines
-
-* Treat packed files as **read-only**
-* Modify original source files instead
-* Use file headers (`## File: path`) to distinguish content
-* Handle carefully — may contain sensitive information
-
----
-
-## ⚙️ Configuration
-
-Defined in:
-
-```
-openenv.yaml
-```
-
-Includes:
-
-* Task definitions
-* Episode lengths
-* Dependencies
-* OpenEnv metadata
-
----
-
-## 🛡️ Design Principles
-
-* Deterministic evaluation (seed-controlled)
-* Strict schema validation (Pydantic)
-* Fail-safe execution (invalid actions → `hold`)
-* Modular simulation engine
-* LLM-first design
-
----
-
-## 📈 Future Work
-
-* Multi-echelon supplier networks
-* Dynamic pricing integration
-* Real-time demand sensing
-* Advanced RL baselines (PPO, SAC)
-* Distributed simulation
-
----
-
-## 📜 License
+## License
 
 Apache License 2.0
-
----
-
-## 🤝 Contributing
-
-1. Fork the repo
-2. Create a feature branch
-3. Add tests
-4. Submit a PR
-
----
-
-## 🏁 Summary
-
-InventOps is a **realistic, extensible, and production-ready environment** for:
-
-* Reinforcement learning research
-* LLM-based decision systems
-* Supply chain optimization
-
-If you're building **autonomous logistics intelligence**, this is your sandbox.
