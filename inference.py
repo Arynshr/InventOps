@@ -170,82 +170,14 @@ def heuristic_action(obs):
         print(f"[DEBUG] heuristic error: {e}", flush=True)
         return '{"action_type":"hold"}', Action(action_type="hold")
 
-def heuristic_action(obs):
-    from InventOps.models import Action
-
-    try:
-        inventory = obs.inventory_levels
-        demand = obs.demand_forecast
-        capacity = obs.warehouse_capacity_remaining
-
-        # ── Find most critical SKU ──
-        critical_sku = None
-        worst_cover = float("inf")
-
-        for sku, whs in inventory.items():
-            total = sum(whs.values())
-            d = demand.get(sku, 0)
-
-            cover = (total / d) if d > 0 else 99
-
-            if cover < worst_cover:
-                worst_cover = cover
-                critical_sku = sku
-
-        if critical_sku is None:
-            return '{"action_type":"hold"}', Action(action_type="hold")
-
-        whs = inventory[critical_sku]
-
-        # ── Find warehouses ──
-        target_wh = min(whs, key=lambda w: whs[w])  # lowest stock
-        source_wh = max(whs, key=lambda w: whs[w])  # highest stock
-
-        # ── Try transfer first ──
-        if source_wh != target_wh and whs[source_wh] > 0:
-            qty = max(1, (whs[source_wh] - whs[target_wh]) // 2)
-            free_cap = capacity.get(target_wh, 0)
-            qty = min(qty, free_cap)
-
-            if qty > 0:
-                action = {
-                    "action_type": "transfer",
-                    "sku_id": critical_sku,
-                    "quantity": qty,
-                    "source_warehouse": source_wh,
-                    "target_warehouse": target_wh,
-                }
-                return json.dumps(action), Action(**action)
-
-        # ── Otherwise order ──
-        best_wh = max(capacity, key=lambda w: capacity[w])
-        free_cap = capacity.get(best_wh, 0)
-
-        if free_cap > 0:
-            d = demand.get(critical_sku, 1)
-            qty = max(1, int(d * 5))  # ~5 days cover
-            qty = min(qty, free_cap)
-
-            action = {
-                "action_type": "order",
-                "sku_id": critical_sku,
-                "quantity": qty,
-                "target_warehouse": best_wh,
-            }
-            return json.dumps(action), Action(**action)
-
-        return '{"action_type":"hold"}', Action(action_type="hold")
-
-    except Exception as e:
-        print(f"[DEBUG] heuristic error: {e}", flush=True)
-        return '{"action_type":"hold"}', Action(action_type="hold")
-
 # ── LLM call ──────────────────────────────────────────────────────────────────
 
-def get_action(client: OpenAI, obs):
+def get_action(client: OpenAI, obs) -> tuple[str, "Action", float]:
+    """Call the LLM and return (raw_text, Action, latency_ms)."""
     from InventOps.models import Action
 
     raw = '{"action_type":"hold"}'
+    t0 = time.time()
     try:
         completion = client.chat.completions.create(
             model=MODEL_NAME,
@@ -256,6 +188,7 @@ def get_action(client: OpenAI, obs):
             temperature=TEMPERATURE,
             max_tokens=MAX_TOKENS,
         )
+        latency_ms = (time.time() - t0) * 1000
         raw = (completion.choices[0].message.content or "").strip()
 
         # Strip markdown
@@ -269,23 +202,25 @@ def get_action(client: OpenAI, obs):
             data = json.loads(raw)
         except Exception as parse_err:
             print(f"[DEBUG] JSON parse error: {parse_err} | raw={raw}", flush=True)
-            return raw, Action(action_type="hold")
+            return raw, Action(action_type="hold"), latency_ms
 
         allowed = {"action_type", "sku_id", "quantity", "source_warehouse", "target_warehouse"}
         filtered = {k: v for k, v in data.items() if k in allowed}
-        return raw, Action(**filtered)
+        return raw, Action(**filtered), latency_ms
 
     except Exception as exc:
+        latency_ms = (time.time() - t0) * 1000
         print(f"[DEBUG] parse error: {exc} | raw={raw!r}", flush=True)
-        return raw, Action(action_type="hold")
+        return raw, Action(action_type="hold"), latency_ms
 
 
 # ── Episode runner ────────────────────────────────────────────────────────────
 
-def run_episode(client: OpenAI, task_id: str) -> dict:
+def run_episode(client: OpenAI, task_id: str, seed: int = 0) -> dict:
     from InventOps import SupplyChainEnv
 
     logger = get_logger()
+    run_id = f"inf-{int(time.time())}-{uuid.uuid4().hex[:6]}"
     env = SupplyChainEnv(task_id=task_id, seed=seed)
     obs = env.reset()
 
@@ -370,7 +305,7 @@ def main() -> None:
 
     results = []
     for i, task_id in enumerate(TASKS):
-        result = run_episode(client, task_id)
+        result = run_episode(client, task_id, seed=i)
         results.append(result)
 
         if i < len(TASKS) - 1:
