@@ -110,13 +110,15 @@ def action_distribution(
     db_path: str = DEFAULT_DB,
     task_id: str | None = None,
 ) -> pd.DataFrame:
-    where = f"WHERE task_id = '{task_id}'" if task_id else ""
     con = _conn(db_path)
     try:
+        if task_id:
+            return pd.read_sql(
+                "SELECT action_type, COUNT(*) AS count FROM steps WHERE task_id = ? GROUP BY action_type",
+                con, params=[task_id],
+            )
         return pd.read_sql(
-            f"""SELECT action_type, COUNT(*) AS count
-                FROM steps {where}
-                GROUP BY action_type""",
+            "SELECT action_type, COUNT(*) AS count FROM steps GROUP BY action_type",
             con,
         )
     finally:
@@ -124,13 +126,21 @@ def action_distribution(
 
 
 def failure_reasons(db_path: str = DEFAULT_DB, task_id: str | None = None) -> pd.DataFrame:
-    where = f"AND task_id = '{task_id}'" if task_id else ""
     con = _conn(db_path)
     try:
+        if task_id:
+            return pd.read_sql(
+                """SELECT failure_reason, COUNT(*) AS occurrences
+                    FROM steps
+                    WHERE failure_reason IS NOT NULL AND task_id = ?
+                    GROUP BY failure_reason
+                    ORDER BY occurrences DESC""",
+                con, params=[task_id],
+            )
         return pd.read_sql(
-            f"""SELECT failure_reason, COUNT(*) AS occurrences
+            """SELECT failure_reason, COUNT(*) AS occurrences
                 FROM steps
-                WHERE failure_reason IS NOT NULL {where}
+                WHERE failure_reason IS NOT NULL
                 GROUP BY failure_reason
                 ORDER BY occurrences DESC""",
             con,
@@ -141,20 +151,20 @@ def failure_reasons(db_path: str = DEFAULT_DB, task_id: str | None = None) -> pd
 
 def reward_breakdown_agg(db_path: str = DEFAULT_DB, task_id: str | None = None) -> pd.DataFrame:
     """Average reward components across all steps."""
-    where = f"WHERE task_id = '{task_id}'" if task_id else ""
+    _AGG_SQL = """SELECT AVG(fulfillment)   AS fulfillment,
+                         AVG(holding_cost)  AS holding_cost,
+                         AVG(stockout_pen)  AS stockout_penalty,
+                         AVG(order_cost)    AS order_cost,
+                         AVG(transfer_cost) AS transfer_cost,
+                         AVG(capacity_pen)  AS capacity_breach,
+                         AVG(bullwhip_pen)  AS bullwhip
+                  FROM steps"""
     con = _conn(db_path)
     try:
-        df = pd.read_sql(
-            f"""SELECT AVG(fulfillment)   AS fulfillment,
-                       AVG(holding_cost)  AS holding_cost,
-                       AVG(stockout_pen)  AS stockout_penalty,
-                       AVG(order_cost)    AS order_cost,
-                       AVG(transfer_cost) AS transfer_cost,
-                       AVG(capacity_pen)  AS capacity_breach,
-                       AVG(bullwhip_pen)  AS bullwhip
-                FROM steps {where}""",
-            con,
-        )
+        if task_id:
+            df = pd.read_sql(_AGG_SQL + " WHERE task_id = ?", con, params=[task_id])
+        else:
+            df = pd.read_sql(_AGG_SQL, con)
     finally:
         con.close()
     return df
@@ -192,17 +202,15 @@ def available_seeds(db_path: str = DEFAULT_DB, task_id: str | None = None, run_i
 # ── RLVR tab ──────────────────────────────────────────────────────────────────
 
 def rlvr_progression(db_path: str = DEFAULT_DB, task_id: str | None = None) -> pd.DataFrame:
-    where = f"WHERE task_id = '{task_id}'" if task_id else ""
+    _RLVR_SQL = """SELECT run_id, task_id, round_num,
+                          mean_score, min_score, max_score, failure_summary,
+                          datetime(ts, 'unixepoch', 'localtime') AS recorded_at
+                   FROM rlvr_rounds"""
     con = _conn(db_path)
     try:
-        return pd.read_sql(
-            f"""SELECT run_id, task_id, round_num,
-                       mean_score, min_score, max_score, failure_summary,
-                       datetime(ts, 'unixepoch', 'localtime') AS recorded_at
-                FROM rlvr_rounds {where}
-                ORDER BY ts, round_num""",
-            con,
-        )
+        if task_id:
+            return pd.read_sql(_RLVR_SQL + " WHERE task_id = ? ORDER BY ts, round_num", con, params=[task_id])
+        return pd.read_sql(_RLVR_SQL + " ORDER BY ts, round_num", con)
     finally:
         con.close()
 

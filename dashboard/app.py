@@ -188,10 +188,14 @@ with st.sidebar:
     st.markdown("**Auto-refresh**")
     auto_refresh = st.toggle("Refresh every 10s", value=False)
     if auto_refresh:
-        import time
-        st.caption("Page will auto-refresh.")
-        time.sleep(10)
-        st.rerun()
+        # Inject a client-side meta-refresh so the *server thread* is never
+        # blocked. The browser reloads the page after 10 s without keeping a
+        # Python thread alive for the entire sleep duration.
+        st.markdown(
+            '<meta http-equiv="refresh" content="10">',
+            unsafe_allow_html=True,
+        )
+        st.caption("Page will auto-refresh every 10 s (client-side).")
 
     st.divider()
     if st.button("🔄 Refresh now", use_container_width=True):
