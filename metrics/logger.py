@@ -10,11 +10,14 @@ Usage:
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 import time
 from pathlib import Path
 from typing import Optional
+
+_log = logging.getLogger(__name__)
 
 
 _SCHEMA = """
@@ -78,6 +81,7 @@ class MetricLogger:
 
     def __init__(self, db_path: str = "metrics/inventops.db", noop: bool = False):
         self._noop = noop
+        self._db_path = db_path  # stored so get_logger() can detect conflicting re-init
         if noop:
             return
 
@@ -193,9 +197,25 @@ def get_logger(
     db_path: str = "metrics/inventops.db",
     noop: bool = False,
 ) -> MetricLogger:
-    """Return (or create) the process-wide default MetricLogger."""
+    """Return (or create) the process-wide default MetricLogger.
+
+    The first call initialises the singleton with the given ``db_path`` and
+    ``noop`` values.  Subsequent calls with *different* arguments are ignored
+    (the original singleton is returned) and a warning is emitted so that
+    accidental misconfiguration (e.g. tests expecting ``:memory:``) surfaces
+    immediately instead of silently writing to the wrong database.
+    """
     global _default_logger
     with _logger_lock:
         if _default_logger is None:
             _default_logger = MetricLogger(db_path=db_path, noop=noop)
+        else:
+            existing_path = getattr(_default_logger, "_db_path", None)
+            existing_noop = getattr(_default_logger, "_noop", None)
+            if db_path != existing_path or noop != existing_noop:
+                _log.warning(
+                    "get_logger() called with db_path=%r noop=%r but singleton already "
+                    "initialised with db_path=%r noop=%r — returning existing logger.",
+                    db_path, noop, existing_path, existing_noop,
+                )
     return _default_logger

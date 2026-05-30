@@ -172,15 +172,13 @@ def heuristic_action(obs):
 
 # ── LLM call ──────────────────────────────────────────────────────────────────
 
-<<<<<<< HEAD
-def get_action(client: OpenAI, obs) -> tuple:
-    """Returns (raw_str, Action, latency_ms)."""
+def get_action(client: OpenAI, obs) -> tuple[str, "Action", float]:
+    """Call the LLM and return (raw_text, Action, latency_ms)."""
     from InventOps.models import Action
 
     raw = '{"action_type":"hold"}'
-    latency_ms: Optional[float] = None
+    t0 = time.time()
     try:
-        t0 = time.perf_counter()
         completion = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
@@ -190,33 +188,7 @@ def get_action(client: OpenAI, obs) -> tuple:
             temperature=TEMPERATURE,
             max_tokens=MAX_TOKENS,
         )
-        latency_ms = (time.perf_counter() - t0) * 1000
-=======
-def get_action(client: Optional[OpenAI], obs):
-    from InventOps.models import Action
-
-    raw = '{"action_type":"hold"}'
-
-    # ── Fallback if no client ──
-    if client is None:
-        return raw, Action(action_type="hold")
-
-    try:
-        try:
-            completion = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user",   "content": format_observation(obs)},
-                ],
-                temperature=TEMPERATURE,
-                max_tokens=MAX_TOKENS,
-            )
-        except Exception as api_err:
-            print(f"[DEBUG] API error: {api_err}", flush=True)
-            return raw, Action(action_type="hold")
-
->>>>>>> origin/feat/agent
+        latency_ms = (time.time() - t0) * 1000
         raw = (completion.choices[0].message.content or "").strip()
 
         # Strip markdown
@@ -230,36 +202,25 @@ def get_action(client: Optional[OpenAI], obs):
             data = json.loads(raw)
         except Exception as parse_err:
             print(f"[DEBUG] JSON parse error: {parse_err} | raw={raw}", flush=True)
-            return raw, Action(action_type="hold")
+            return raw, Action(action_type="hold"), latency_ms
 
         allowed = {"action_type", "sku_id", "quantity", "source_warehouse", "target_warehouse"}
         filtered = {k: v for k, v in data.items() if k in allowed}
-<<<<<<< HEAD
         return raw, Action(**filtered), latency_ms
 
     except Exception as exc:
+        latency_ms = (time.time() - t0) * 1000
         print(f"[DEBUG] parse error: {exc} | raw={raw!r}", flush=True)
         return raw, Action(action_type="hold"), latency_ms
 
 
 # ── Episode runner ────────────────────────────────────────────────────────────
 
-def run_episode(client: OpenAI, task_id: str, run_id: str, seed: int = 42) -> dict:
-=======
-
-        return raw, Action(**filtered)
-
-    except Exception as exc:
-        print(f"[DEBUG] unexpected error: {exc} | raw={raw}", flush=True)
-        return raw, Action(action_type="hold")
-    
-# ── Episode runner ────────────────────────────────────────────────────────────
-
-def run_episode(client: Optional[OpenAI], task_id: str) -> dict:
->>>>>>> origin/feat/agent
+def run_episode(client: OpenAI, task_id: str, seed: int = 0) -> dict:
     from InventOps import SupplyChainEnv
 
     logger = get_logger()
+    run_id = f"inf-{int(time.time())}-{uuid.uuid4().hex[:6]}"
     env = SupplyChainEnv(task_id=task_id, seed=seed)
     obs = env.reset()
 
@@ -338,34 +299,13 @@ def main() -> None:
         print("[INFO] Already running, exiting.", flush=True)
         return
     os.environ["INFERENCE_RUNNING"] = "1"
-
-    # ── Safe client init ──
-    client = None
-    if API_KEY:
-        try:
-            client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-            print(f"[INFO] model={MODEL_NAME} tasks={TASKS}", flush=True)
-        except Exception as e:
-            print(f"[WARN] Client init failed: {e}", flush=True)
-            client = None
-    else:
-        print("[WARN] No API key found. Running in fallback mode.", flush=True)
-
-    run_id = f"inf-{int(time.time())}-{uuid.uuid4().hex[:6]}"
-    print(f"[INFO] run_id={run_id}", flush=True)
+    
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    print(f"[INFO] model={MODEL_NAME} tasks={TASKS}", flush=True)
 
     results = []
     for i, task_id in enumerate(TASKS):
-<<<<<<< HEAD
-        result = run_episode(client, task_id, run_id=run_id)
-=======
-        try:
-            result = run_episode(client, task_id)
-        except Exception as e:
-            print(f"[DEBUG] task {task_id} crashed: {e}", flush=True)
-            result = {"task_id": task_id, "score": 0.0, "success": False, "steps": 0}
-
->>>>>>> origin/feat/agent
+        result = run_episode(client, task_id, seed=i)
         results.append(result)
 
         if i < len(TASKS) - 1:
