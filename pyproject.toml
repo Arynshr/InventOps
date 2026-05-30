@@ -32,3 +32,4 @@ include = ["InventOps*", "rlvr*", "server*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+python_files = ["*.py"]
